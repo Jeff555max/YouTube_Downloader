@@ -18,13 +18,16 @@ def _base_opts():
     opts = {
         "quiet": True,
         "no_warnings": True,
-        # Используем Android клиент — он стабильно работает без cookies
         "extractor_args": {
             "youtube": {"player_client": ["android"]}
         },
         "http_headers": {
             "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
         },
+        "retries": 10,
+        "fragment_retries": 10,
+        "retry_sleep_functions": {"http": lambda n: 3 * n},
+        "socket_timeout": 30,
     }
     ffmpeg = _ffmpeg_location()
     if ffmpeg:
