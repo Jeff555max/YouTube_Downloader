@@ -14,15 +14,18 @@ def _ffmpeg_location():
     return None
 
 
-def _base_opts():
+PLAYER_CLIENTS = ["android", "ios", "web"]
+
+
+def _base_opts(player_client="android"):
     opts = {
         "quiet": True,
         "no_warnings": True,
         "extractor_args": {
-            "youtube": {"player_client": ["android"]}
+            "youtube": {"player_client": [player_client]}
         },
         "http_headers": {
-            "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         },
         "retries": 10,
         "fragment_retries": 10,
@@ -44,12 +47,17 @@ class FetchFormatsThread(QThread):
         self.url = url
 
     def run(self):
-        try:
-            with yt_dlp.YoutubeDL(_base_opts()) as ydl:
-                info = ydl.extract_info(self.url, download=False)
-            self.finished.emit(self._parse_formats(info))
-        except Exception as e:
-            self.error.emit(str(e))
+        last_error = None
+        for client in PLAYER_CLIENTS:
+            try:
+                with yt_dlp.YoutubeDL(_base_opts(client)) as ydl:
+                    info = ydl.extract_info(self.url, download=False)
+                self.finished.emit(self._parse_formats(info))
+                return
+            except Exception as e:
+                last_error = e
+                continue
+        self.error.emit(str(last_error))
 
     def _parse_formats(self, info):
         result = [{"label": "MP3", "ext": "mp3", "resolution": "Audio",
@@ -91,27 +99,32 @@ class DownloadThread(QThread):
         self.save_path = save_path
 
     def run(self):
-        try:
-            ydl_opts = _base_opts()
-            ydl_opts["outtmpl"] = f"{self.save_path}/%(title)s.%(ext)s"
-            ydl_opts["progress_hooks"] = [self._hook]
+        last_error = None
+        for client in PLAYER_CLIENTS:
+            try:
+                ydl_opts = _base_opts(client)
+                ydl_opts["outtmpl"] = f"{self.save_path}/%(title)s.%(ext)s"
+                ydl_opts["progress_hooks"] = [self._hook]
 
-            if self.fmt["is_audio"]:
-                ydl_opts["format"] = "bestaudio/best"
-                ydl_opts["postprocessors"] = [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }]
-            else:
-                ydl_opts["format"] = self.fmt["format_id"]
-                ydl_opts["merge_output_format"] = "mp4"
+                if self.fmt["is_audio"]:
+                    ydl_opts["format"] = "bestaudio/best"
+                    ydl_opts["postprocessors"] = [{
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }]
+                else:
+                    ydl_opts["format"] = self.fmt["format_id"]
+                    ydl_opts["merge_output_format"] = "mp4"
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([self.url])
-            self.finished.emit()
-        except Exception as e:
-            self.error.emit(str(e))
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([self.url])
+                self.finished.emit()
+                return
+            except Exception as e:
+                last_error = e
+                continue
+        self.error.emit(str(last_error))
 
     def _hook(self, d):
         if d["status"] == "downloading":
