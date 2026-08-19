@@ -192,9 +192,68 @@ Copy-Item (Get-Command ffmpeg).Source 'dist\VideoDownloader\ffmpeg.exe' -Force
 
 Долгосрочное решение — добавить `ffmpeg.exe` в `.spec` файл через `binaries=[('path/to/ffmpeg.exe', '.')]`, тогда PyInstaller будет включать его автоматически.
 
+### Проблема 7: KeyError('params') — внутренняя ошибка экстрактора
+
+**Симптом:**
+```
+ERROR: An extractor error has occurred. (caused by KeyError('params'));
+please report this issue on https://github.com/yt-dlp/yt-dlp/issues
+```
+
+**Причина:**
+Баг внутри yt-dlp при использовании конкретного `player_client`. Возникает когда YouTube меняет формат ответа API, а yt-dlp ещё не обновился. Проявляется непредсказуемо — один клиент может работать сегодня и сломаться завтра.
+
+**Решение:**
+Автоматический fallback по списку клиентов `android → ios → web`. Если один клиент падает с любой ошибкой — автоматически пробуется следующий:
+
+```python
+PLAYER_CLIENTS = ["android", "ios", "web"]
+
+def _base_opts(player_client="android"):
+    opts = {
+        "extractor_args": {"youtube": {"player_client": [player_client]}},
+        ...
+    }
+    return opts
+
+# В FetchFormatsThread.run() и DownloadThread.run():
+last_error = None
+for client in PLAYER_CLIENTS:
+    try:
+        with yt_dlp.YoutubeDL(_base_opts(client)) as ydl:
+            # ... fetch или download
+        return  # успех — выходим
+    except Exception as e:
+        last_error = e
+        continue  # пробуем следующий клиент
+self.error.emit(str(last_error))  # все клиенты не сработали
+```
+
+**Важно:** Fallback применяется и при получении форматов и при скачивании независимо. Это означает что fetch может использовать `android`, а download — `ios`, и `format_id` могут не совпасть. На практике это не проблема, так как при download yt-dlp делает свежий запрос и получает актуальные форматы от того клиента который сработал.
+
 ---
 
-## Ключевые решения в коде
+### Проблема 8: Таймаут при скачивании
+
+**Симптом:**
+```
+ERROR: [download] Got error: The read operation timed out.
+```
+
+**Причина:**
+YouTube периодически throttling-ует соединения для не-браузерных клиентов — намеренно замедляет или обрывает передачу данных. Также может быть нестабильный интернет или большой размер файла.
+
+**Решение:**
+Добавить в `_base_opts()` параметры устойчивости:
+
+```python
+"retries": 10,                                    # повторов при HTTP ошибке
+"fragment_retries": 10,                           # повторов для каждого DASH фрагмента
+"retry_sleep_functions": {"http": lambda n: 3*n}, # пауза растёт: 3с, 6с, 9с...
+"socket_timeout": 30,                             # таймаут соединения в секундах
+```
+
+---
 
 ### Определение пути к ffmpeg
 
@@ -251,3 +310,4 @@ for f in info.get("formats", []):
 5. **sys.frozen** — флаг PyInstaller, True когда код запущен как .exe
 6. **sys._MEIPASS** — временная папка с Python-файлами при запуске .exe, НЕ папка с .exe
 7. **sys.executable** — путь к самому .exe файлу, `os.path.dirname(sys.executable)` — его папка
+8. **PLAYER_CLIENTS** — список `["android", "ios", "web"]`, оба потока (fetch и download) перебирают его независимо при любой ошибке
